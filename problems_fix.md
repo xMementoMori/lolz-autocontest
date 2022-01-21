@@ -4,7 +4,9 @@ https://stackoverflow.com/questions/44951456/pip-error-microsoft-visual-c-14-0-i
 
 ### ПРОБЛЕМЫ С БИБЛИОТЕКОЙ CRYPTO
 `py -m pip uninstall crypto`
+
 `py -m pip uninstall pycrypto`
+
 `py -m pip install --force-reinstall pycryptodome`
 
 ### REQUESTS TIMEOUT

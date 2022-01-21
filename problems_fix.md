@@ -4,9 +4,12 @@ https://stackoverflow.com/questions/44951456/pip-error-microsoft-visual-c-14-0-i
 
 ### ПРОБЛЕМЫ С БИБЛИОТЕКОЙ CRYPTO
 `py -m pip uninstall crypto`
+
 `py -m pip uninstall pycrypto`
+
 `py -m pip install --force-reinstall pycryptodome`
 
+- если пользуетесь виндой - проверьте, не запускается ли скрипт через `python main.py`
 ### REQUESTS TIMEOUT
 1. Убедиться в том, что https://lolz.guru не лежит
 1. Зайти в файл settings.json и проверить значение поля `proxy type`

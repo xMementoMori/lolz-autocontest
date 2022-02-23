@@ -3,7 +3,6 @@ from traceback_with_variables import Format, ColorSchemes, global_print_exc, pri
 from bs4 import BeautifulSoup
 import random
 import string
-import eventlet
 from typing import Union
 from urllib.parse import quote
 from multiprocessing.pool import ThreadPool
@@ -27,8 +26,7 @@ fmterr = Format(
 )
 global_print_exc(fmt=fmterr)
 
-# import requests
-requests = eventlet.import_patched('requests')
+import httpx
 
 level_styles = {'debug': {'color': 8},
                 'info': {},
@@ -50,6 +48,7 @@ fileHandler = RotatingFileHandler("lolzautocontest.log", maxBytes=1024 * 1024 * 
 fileHandler.setFormatter(logfmt)
 
 pattern_csrf = re.compile(r'_csrfToken:\s*\"(.*)\",', re.MULTILINE)
+pattern_df_id = re.compile(r'document\.cookie\s*=\s*"([^="]+)="\s*\+\s*toHex\(slowAES\.decrypt\(toNumbers\(\"([0-9a-f]{32})\"\)', re.MULTILINE)
 
 
 # consoleHandler = logging.StreamHandler(sys.stdout)
@@ -61,39 +60,28 @@ class User:
                     method: str,
                     url,
                     checkforjs=False,
-                    timeout_eventlet=15,
                     retries=1,
-                    **kwargs) -> Union[requests.Response, None]:
+                    **kwargs) -> Union[httpx.Response, None]:
         for i in range(0, retries):
             try:
-                resp = eventlet.timeout.with_timeout(timeout_eventlet, self.session.request, method, url, **kwargs)
-            except requests.Timeout:
-                self.logger.warning("%s requests timeout", url)
+                resp = self.session.request(method, url, **kwargs)
+                resp.raise_for_status()
+            except httpx.TimeoutException as e:
+                self.logger.warning("%s timeout", e.request.url)
                 self.changeproxy()
                 time.sleep(settings.low_time)
-            except eventlet.Timeout:
-                self.logger.warning("%s eventlet timeout", url)
+            except httpx.ProxyError as e:
+                self.logger.warning("%s proxy error (%s)", e.request.url, str(e))
                 self.changeproxy()
                 time.sleep(settings.low_time)
-            except requests.exceptions.ProxyError as e:
-                self.logger.warning("%s proxy error (%s)", url, e)
+            except httpx.TransportError as e:
+                self.logger.warning("%s TransportError (%s)", e.request.url, str(e))
                 self.changeproxy()
                 time.sleep(settings.low_time)
-            except urllib3.exceptions.SSLError as e:
-                self.logger.warning("%s SSLError (timeout?): %s", url, str(e))
-                time.sleep(settings.low_time)
-            except requests.ConnectionError:
-                self.logger.warning("%s ConnectionError", url)
-                self.changeproxy()
+            except httpx.HTTPStatusError as e:
+                self.logger.warning("%s responded with %s status", e.request.url, e.response.status_code)
                 time.sleep(settings.low_time)
             else:
-                try:
-                    resp.raise_for_status()
-                except requests.HTTPError:
-                    self.logger.warning("%s Lolz down with %s status", url, resp.status_code)
-                    time.sleep(settings.low_time)
-                    continue
-
                 if checkforjs:
                     soup = BeautifulSoup(resp.text, "html.parser")
                     if self.checkforjsandfix(soup):
@@ -120,41 +108,46 @@ class User:
 
         self.logger.verbose("lolz asks to complete aes task")
 
-        value_encrypted = re.search(r"slowAES.decrypt\(toNumbers\(\"([0-9a-f]{32})\"\)", script[1].string).group(1)
-        cipher = AES.new(bytearray.fromhex("e9df592a0909bfa5fcff1ce7958e598b"), AES.MODE_CBC, bytearray.fromhex("5d10aa76f4aed1bdf3dbb302e8863d52"))
-        value = cipher.decrypt(bytearray.fromhex(value_encrypted)).hex()
+        match = pattern_df_id.search(script[1].string)
+        cipher = AES.new(bytearray.fromhex("e9df592a0909bfa5fcff1ce7958e598b"), AES.MODE_CBC,
+                         bytearray.fromhex("5d10aa76f4aed1bdf3dbb302e8863d52"))
+        value = cipher.decrypt(bytearray.fromhex(match.group(2))).hex()
         self.logger.debug("PoW answer %s", str(value))
-        self.session.cookies.set_cookie(requests.cookies.create_cookie(domain="." + settings.lolzdomain,
-                                                                       name='df_uid',
-                                                                       value=value))
+        self.session.cookies.set(domain="." + settings.lolzdomain,
+                                 name=match.group(1),
+                                 value=value)
         return True  # should retry
 
     def changeproxy(self):
         if settings.proxy_type == 0:
             return
 
+        newProxy = {}
         if settings.proxy_type == 1:
             randstr = ''.join(random.choices(string.ascii_lowercase, k=5))
             self.logger.verbose("changing proxy to %s", randstr)
-            self.session.proxies = {'http': 'socks5://{}@localhost:9050'.format(randstr + ":" + self.username),
-                                    'https': 'socks5://{}@localhost:9050'.format(randstr + ":" + self.username)}
+            newProxy = {'all://': 'socks5://{}@localhost:9050'.format(randstr + ":" + self.username)}
         elif settings.proxy_type == 2:  # these are the moments i wish python had switch cases
             self.current_proxy_number += 1
             if self.current_proxy_number >= self.proxy_pool_len:
                 self.current_proxy_number = 0
             proxy = self.proxy_pool[self.current_proxy_number]
             self.logger.verbose("changing proxy to %s index %d", proxy, self.current_proxy_number)
-            self.session.proxies = {'http': proxy,
-                                    'https': proxy}
+            newProxy = {'all://': proxy}
             pass
         elif settings.proxy_type == 3:  # TODO: implement global pool
             pass
+
+        # hack to change proxies with httpx
+        newSession = httpx.Client(http2=True, proxies=newProxy)
+        newSession.headers = self.session.headers
+        newSession.cookies = self.session.cookies
+        self.session = newSession
 
     def solvepage(self) -> bool:  # return whether we found any contests or not
         found_contest = False
         contestListResp = self.makerequest("GET",
                                            settings.lolzUrl + "forums/contests/",
-                                           timeout_eventlet=15,
                                            timeout=12.05,
                                            retries=3,
                                            checkforjs=True)
@@ -180,24 +173,28 @@ class User:
 
         if len(threadsList) == 0:
             return False
-
+        # TODO: make threadsList a list of threadids instead of html objects
+        # also remove all blacklisted threadids before we get to this point
         self.logger.notice("detected %d contests", len(threadsList))
         for contestDiv in threadsList:
             thrid = int(contestDiv.get('id').split('-')[1])
 
-            if thrid in self.blacklist:
+            if thrid in self.blacklist or thrid in settings.ExpireBlacklist:
                 continue
             found_contest = True
             contestName = contestDiv.find("div", class_="discussionListItem--Wrapper") \
                 .find("a", class_="listBlock main PreviewTooltip") \
                 .find("h3", class_="title").find("span", class_="spanTitle").contents[0]
+            # this is not very nice but should avoid the bug with not sleeping when skipping for some reason
+            time.sleep(settings.switch_time)
 
             self.logger.notice("participating in %s thread id %d", contestName, thrid)
 
+            # TODO: stuff bellow probably should get it's own function
+
             contestResp = self.makerequest("GET",
-                                           settings.lolzUrl + "threads/" + str(thrid),
+                                           settings.lolzUrl + "threads/" + str(thrid) + "/",
                                            retries=3,
-                                           timeout_eventlet=15,
                                            timeout=12.05,
                                            checkforjs=True)
             if contestResp is None:
@@ -236,7 +233,7 @@ class User:
 
             self.logger.verbose("for %s using solver %s", captchaType, type(solver).__name__)
 
-            participateParams = solver.solve(divcaptcha)
+            participateParams = solver.solve(divcaptcha, id=thrid)
             if participateParams is None:
                 continue
 
@@ -251,6 +248,9 @@ class User:
             if "_redirectStatus" in response and response["_redirectStatus"] == 'ok':
                 self.logger.success("successfully participated in %s thread id %s", contestName, thrid)
             else:
+                if captchaType == "AnswerCaptcha": # TODO: this is kina a hack
+                    self.logger.error("%s has wrong answer", thrid)
+                    settings.ExpireBlacklist[thrid] = time.time() + 300000
                 self.logger.error("didn't participate: %s", str(response))
             self.logger.debug("%s", str(response))
         return found_contest
@@ -267,9 +267,12 @@ class User:
                 self.logger.notice("ip: %s", ip.json()["origin"])
             else:
                 raise RuntimeError("Wasn't able to reach httpbin.org in 30 tries. Check your proxies and your internet connection")
-
             while True:
-                self.logger.info("loop at %.2f seconds", time.time() - starttime)
+                cur_time = time.time()
+                # remove old entries
+                settings.ExpireBlacklist = {k: v for k, v in settings.ExpireBlacklist.items() if v > cur_time}
+                self.logger.info("loop at %.2f seconds (blacklist size %d)", cur_time - starttime,
+                                 len(settings.ExpireBlacklist))
 
                 if self.solvepage():
                     found_contest = settings.found_count
@@ -281,7 +284,7 @@ class User:
                     time.sleep(settings.high_time)
 
     def __init__(self, parameters):
-        self.session = requests.session()
+        self.session = httpx.Client(http2=True)
         self.username = parameters[0]
 
         self.logger = verboselogs.VerboseLogger(self.username)
@@ -292,13 +295,12 @@ class User:
         self.logger.debug("user parameters %s", parameters)
 
         self.monitor_dims = (parameters[1]["monitor_size_x"], parameters[1]["monitor_size_y"])
-
         self.session.headers.update({"User-Agent": parameters[1]["User-Agent"]})
         for key, value in parameters[1]["cookies"].items():
-            self.session.cookies.set_cookie(requests.cookies.create_cookie(
+            self.session.cookies.set(
                 domain="." + settings.lolzdomain,
                 name=key,
-                value=value))
+                value=value)
 
         if settings.proxy_type == 2:
             self.proxy_pool = parameters[1]["proxy_pool"]
@@ -311,17 +313,15 @@ class User:
         self.solvers = {
             "Slider2Captcha": solvers.SolverSlider2(self),
             "ClickCaptcha": solvers.SolverHalfCircle(self),
+            "AnswerCaptcha": solvers.SolverAnswers(self),
         }
 
         # kinda a hack to loop trough proxies because python doesn't have static variables
         self.current_proxy_number = -1  # self.changeproxy adds one to this number
         self.changeproxy()  # set initital proxy
-        self.session.cookies.set_cookie(
-            requests.cookies.create_cookie(domain=settings.lolzdomain, name='xf_viewedContestsHidden', value='1'))
-        self.session.cookies.set_cookie(
-            requests.cookies.create_cookie(domain=settings.lolzdomain, name='xf_feed_custom_order', value='post_date'))
-        self.session.cookies.set_cookie(
-            requests.cookies.create_cookie(domain=settings.lolzdomain, name='xf_logged_in', value='1'))
+        self.session.cookies.set(domain=settings.lolzdomain, name='xf_viewedContestsHidden', value='1')
+        self.session.cookies.set(domain=settings.lolzdomain, name='xf_feed_custom_order', value='post_date')
+        self.session.cookies.set(domain=settings.lolzdomain, name='xf_logged_in', value='1')
 
     def participate(self, threadid: str, csrf: str, data: dict):
         # https://stackoverflow.com/questions/6005066/adding-dictionaries-together-python
@@ -331,7 +331,7 @@ class User:
                                         '_xfNoRedirect': 1,
                                         '_xfToken': csrf,
                                         '_xfResponseType': "json",
-                                    }}, timeout_eventlet=15, timeout=12.05, retries=3, checkforjs=True)
+                                    }}, timeout=12.05, retries=3, checkforjs=True)
 
         if response is None:
             return None

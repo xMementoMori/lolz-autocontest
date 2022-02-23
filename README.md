@@ -30,7 +30,7 @@
 1. Устанавливаем и запускаем тор `sudo apt install tor; sudo systemctl start tor` (Опционально но чрезвычайно рекомендую т.к. айпишники банят)
 1. Скачиваем и переходим в репозиторий `git clone https://github.com/acuifex/lolz-autocontest; cd lolz-autocontest`
 1. Устанавливаем пакеты нужные для работы.
-`pip3 install -r requirements.txt`
+`pip3 install -U -r requirements.txt`
 1. Переименовываем settings.example.json в settings.json и редактируем в соответствии с секцией [Настройки](#Настройки)
 1. Запускаем в заднем фоне `bash ./start-background.sh`
 
@@ -45,7 +45,7 @@
 `cd C:\Path\To\repo` <br>
 место `C:\Path\To\repo` естественно пишем путь к распакованному репозиторию
 1. Устанавливаем пакеты нужные для работы.
-`py -m pip install -r requirements.txt` <br>
+`py -m pip install -U -r requirements.txt` <br>
 1. Переименовываем settings.example.json в settings.json и редактируем в соответствии с секцией [Настройки](#Настройки)
 1. Запускаем `py main.py`
 
@@ -79,6 +79,8 @@
 - `found_count`: Если есть новый розыгрыш, проверять розыгрыши каждые `low_time` секунд `found_count` раз. Это сделано на случай спама розыгрышами
 - `low_time`: Проверять каждые `low_time` секунд если нашелся новый розыгрыш
 - `high_time`: Проверять каждые `high_time` секунд если нету новых розыгрышей
+- `switch_time`: Подождать `switch_time` секунд между розыгрышами
+- `solve_time`: "Проходить" розыгрыш `solve_time` секунд
 
 # Получение юзер агента
 1. Заходим на https://www.whatsmyua.info/

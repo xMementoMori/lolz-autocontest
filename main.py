@@ -333,15 +333,15 @@ class User:
         self.session.cookies.set(domain=settings.lolzdomain, name='xf_feed_custom_order', value='post_date')
         self.session.cookies.set(domain=settings.lolzdomain, name='xf_logged_in', value='1')
 
-    def participate(self, threadid: str, csrf: str, data: dict):
+    def participate(self):
         # https://stackoverflow.com/questions/6005066/adding-dictionaries-together-python
         response = self.makerequest("POST", settings.lolzUrl + "threads/" + threadid + "/participate",
-                                    data={**data, **{
+                                    data={
                                         '_xfRequestUri': quote("/threads/" + threadid + "/"),
                                         '_xfNoRedirect': 1,
                                         '_xfToken': csrf,
                                         '_xfResponseType': "json",
-                                    }}, timeout=12.05, retries=3, checkforjs=True)
+                                    }, timeout=12.05, retries=3, checkforjs=True)
 
         if response is None:
             return None

@@ -142,68 +142,12 @@ class User:
         newSession.cookies = self.session.cookies
         self.session = newSession
 
-    def solvegoogle(self, soup, url) -> Union[dict, None]:
-        googletype = soup.find("input", attrs={"name": "googleCaptcha_type"})
-        if googletype is None:
-            raise RuntimeError("google captcha is missing. Something updated probably?")
-        # self.logger.debug("google type: %s", googletype.attrs["value"])
-
-        googlescript = soup.find("script")
-        if googlescript is None:
-            raise RuntimeError("google captcha script is missing. Something updated probably?")
-
-        # v2sitekey = pattern_csrf.search(googlescript.string).group(1)
-        # proxyprotocol, proxy = self.proxy_pool[self.current_proxy_number].split("://", maxsplit=1)
-        params = {
-            'key': settings.anti_captcha_key,
-            'method': "userrecaptcha",
-            'googlekey': settings.lolz_google_key,
-            'pageurl': url,
-            'userAgent': self.session.headers.get("User-Agent"),  # works without this too
-            # 'proxy': proxy,
-            # 'proxytype': proxyprotocol.upper(),  # not sure if upper is necessary.
-            'json': 1
-        }
-        if settings.send_referral_to_creator:
-            params["softguru"] = 109978
-
-        submitresp = self.makerequest("GET", "http://api.captcha.guru/in.php", params=params)
-
-        if submitresp is None:
-            return None
-
-        submit = submitresp.json()
-        self.logger.debug(submit)
-        if submit["status"] == 0:
-            raise RuntimeError("submit was unsuccessful")  # TODO: handle this properly
-
-        while True:
-            time.sleep(5)
-            resp = self.makerequest("GET",
-                                    "http://api.captcha.guru/res.php",
-                                    params={
-                                        'key': settings.anti_captcha_key,
-                                        'action': "get",
-                                        'id': submit["request"],
-                                        'json': 1
-                                    })
-            if resp is None:
-                continue
-                
-            answer = resp.json()
-            self.logger.debug(answer)
-            if answer["status"] == 0 and answer["request"] == "CAPCHA_NOT_READY":
-                continue
-            elif answer["status"] == 1:
-                return {
-                    "googleCaptcha_type": "recaptcha",
-                    "g-recaptcha-response": answer["request"],
-                }
-            else:
-                raise RuntimeError("unknown state") # TODO: and this too
-
-
     def solvecontest(self, thrid) -> bool:  # return whether we were successful
+        solver = solvers.SolverAnswers(self)
+
+        if not solver.onBeforeRequest(thrid):
+            return False
+
         contestResp = self.makerequest("GET",
                                        settings.lolzUrl + "threads/" + str(thrid) + "/",
                                        retries=3,
@@ -225,37 +169,19 @@ class User:
             raise RuntimeError("csrf token is empty. likely bad cookies")
         self.logger.debug("csrf: %s", str(csrf))
 
-        ContestCaptcha = contestSoup.find("div", class_="ContestCaptcha")
-        if ContestCaptcha is None:
-            self.logger.warning("Couldn't get ContestCaptcha. Lag or contest is over?")
+        contestThreadBlock = contestSoup.find("div", class_="contestThreadBlock")
+        if contestThreadBlock is None:
+            self.logger.warning("Couldn't get contestThreadBlock. Lag or contest is over?")
             return False
 
-        divcaptcha = ContestCaptcha.find("div", class_="captchaBlock")
-        if divcaptcha is None:
-            self.logger.warning("Couldn't get captchaBlock. Lag or contest is over?")
+        aButton = contestThreadBlock.find("a", class_="LztContest--Participate button mn-15-0-0 primary")
+        if aButton is None:
+            self.logger.warning("Couldn't get aButton. Lag or contest is over?")
             return False
 
-        captchatypeobj = divcaptcha.find("input", attrs={"name": "captcha_type"})
-
-        if captchatypeobj is None:
-            self.logger.warning("captcha_type not found. adding to blacklist...")
-            self.blacklist.add(thrid)
-            return False
-
-        captchaType = captchatypeobj.get("value")
-        if captchaType != "AnswerCaptcha":
-            raise RuntimeError("Captcha type changed. bailing out")
-
-        participateParams = self.solver.solve(divcaptcha)
+        participateParams = solver.onSuccess(aButton)
         if participateParams is None:
             return False
-
-        googleParams = self.solvegoogle(ContestCaptcha, settings.lolzUrl + "threads/" + str(thrid) + "/")
-        if googleParams is None:
-            self.logger.warning("google captcha response empty")
-            return False
-
-        participateParams.update(googleParams)
 
         self.logger.info("waiting for participation...")
         response = self.participate(str(thrid), csrf, participateParams)
@@ -266,11 +192,9 @@ class User:
             self.blacklist.add(thrid)
 
         if "_redirectStatus" in response and response["_redirectStatus"] == 'ok':
-            self.logger.debug("%s", str(response))
             return True
         else:
-            self.solver.onFailure(response)
-            self.logger.error("didn't participate: %s", str(response))
+            solver.onFailure(response)
             return False
 
     def solvepage(self, csrf) -> bool:  # return whether we found any contests or not
@@ -318,12 +242,9 @@ class User:
             if thrid in self.blacklist or thrid in settings.ExpireBlacklist:
                 continue
 
-            if not self.solver.onBeforeRequest(thrid):
-                continue
-
             found_contest = True
             contestName = contestDiv.find("div", class_="discussionListItem--Wrapper") \
-                .find("a", class_="listBlock main") \
+                .find("a", class_="listBlock main PreviewTooltip") \
                 .find("h3", class_="title").find("span", class_="spanTitle").contents[0]
 
             self.logger.notice("participating in %s thread id %d", contestName, thrid)
@@ -404,8 +325,6 @@ class User:
                 raise Exception("%s has empty proxy_pool" % self.username)
 
         self.blacklist = set()
-
-        self.solver = solvers.SolverAnswers(self)
 
         # kinda a hack to loop trough proxies because python doesn't have static variables
         self.current_proxy_number = -1  # self.changeproxy adds one to this number
